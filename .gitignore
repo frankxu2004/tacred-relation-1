@@ -10,3 +10,4 @@ saved_models/
 dataset/glove/
 dataset/vocab/
 
+.idea/

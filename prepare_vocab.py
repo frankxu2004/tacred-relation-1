@@ -2,6 +2,7 @@
 Prepare vocabulary and initial word vectors.
 """
 import json
+import msgpack
 import pickle
 import argparse
 import numpy as np
@@ -9,22 +10,38 @@ from collections import Counter
 
 from utils import vocab, constant, helper
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Prepare vocab for relation extraction.')
     parser.add_argument('data_dir', help='TACRED directory.')
+    parser.add_argument('squad_dir', help='SQuAD directory.')
     parser.add_argument('vocab_dir', help='Output vocab directory.')
     parser.add_argument('--glove_dir', default='dataset/glove', help='GloVe directory.')
     parser.add_argument('--wv_file', default='glove.840B.300d.txt', help='GloVe vector file.')
     parser.add_argument('--wv_dim', type=int, default=300, help='GloVe vector dimension.')
     parser.add_argument('--min_freq', type=int, default=0, help='If > 0, use min_freq as the cutoff.')
     parser.add_argument('--lower', action='store_true', help='If specified, lowercase all words.')
-    
+
     args = parser.parse_args()
     return args
 
+
+def process_squad(squad_msgpack):
+    train, dev = squad_msgpack
+    train_tokens = []
+    dev_tokens = []
+    for row in train:
+        train_tokens += row[1]  # context
+        train_tokens += row[5]  # question
+    for row in dev:
+        dev_tokens += row[1]
+        dev_tokens += row[5]
+    return train_tokens, dev_tokens
+
+
 def main():
     args = parse_args()
-    
+
     # input files
     train_file = args.data_dir + '/train.json'
     dev_file = args.data_dir + '/dev.json'
@@ -42,24 +59,32 @@ def main():
     train_tokens = load_tokens(train_file)
     dev_tokens = load_tokens(dev_file)
     test_tokens = load_tokens(test_file)
+    # processing squad intermediate files
+    with open(args.squad_dir + '/intermediate.msgpack', 'rb') as squad_file:
+        squad_msgpack = msgpack.load(squad_file)
+    squad_train_tokens, squad_dev_tokens = process_squad(squad_msgpack)
+
     if args.lower:
-        train_tokens, dev_tokens, test_tokens = [[t.lower() for t in tokens] for tokens in\
-                (train_tokens, dev_tokens, test_tokens)]
+        train_tokens, dev_tokens, test_tokens = [[t.lower() for t in tokens] for tokens in \
+                                                 (train_tokens, dev_tokens, test_tokens)]
+
+        squad_train_tokens, squad_dev_tokens = [[t.lower() for t in tokens] for tokens in \
+                                                (squad_train_tokens, squad_dev_tokens)]
 
     # load glove
     print("loading glove...")
     glove_vocab = vocab.load_glove_vocab(wv_file, wv_dim)
     print("{} words loaded from glove.".format(len(glove_vocab)))
-    
+
     print("building vocab...")
-    v = build_vocab(train_tokens, glove_vocab, args.min_freq)
+    v = build_vocab(train_tokens + squad_train_tokens, glove_vocab, args.min_freq)
 
     print("calculating oov...")
     datasets = {'train': train_tokens, 'dev': dev_tokens, 'test': test_tokens}
     for dname, d in datasets.items():
         total, oov = count_oov(d, v)
-        print("{} oov: {}/{} ({:.2f}%)".format(dname, oov, total, oov*100.0/total))
-    
+        print("{} oov: {}/{} ({:.2f}%)".format(dname, oov, total, oov * 100.0 / total))
+
     print("building embeddings...")
     embedding = vocab.build_embedding(wv_file, v, wv_dim)
     print("embedding size: {} x {}".format(*embedding.shape))
@@ -70,6 +95,7 @@ def main():
     np.save(emb_file, embedding)
     print("all done.")
 
+
 def load_tokens(filename):
     with open(filename) as infile:
         data = json.load(infile)
@@ -78,6 +104,7 @@ def load_tokens(filename):
             tokens += d['tokens']
     print("{} tokens from {} examples loaded from {}.".format(len(tokens), len(data), filename))
     return tokens
+
 
 def build_vocab(tokens, glove_vocab, min_freq):
     """ build vocab from tokens and glove words. """
@@ -92,11 +119,13 @@ def build_vocab(tokens, glove_vocab, min_freq):
     print("vocab built with {}/{} words.".format(len(v), len(counter)))
     return v
 
+
 def count_oov(tokens, vocab):
     c = Counter(t for t in tokens)
     total = sum(c.values())
     matched = sum(c[t] for t in vocab)
-    return total, total-matched
+    return total, total - matched
+
 
 def entity_masks():
     """ Get all entity mask tokens as a list. """
@@ -107,7 +136,6 @@ def entity_masks():
     masks += ["OBJ-" + e for e in obj_entities]
     return masks
 
+
 if __name__ == '__main__':
     main()
-
-
