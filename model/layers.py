@@ -100,3 +100,119 @@ class PositionAwareAttention(nn.Module):
         outputs = weights.unsqueeze(1).bmm(x).squeeze(1)
         return outputs
 
+class SeqAttnMatch(nn.Module):
+    """Given sequences X and Y, match sequence Y to each element in X.
+    * o_i = sum(alpha_j * y_j) for i in X
+    * alpha_j = softmax(y_j * x_i)
+    """
+    def __init__(self, input_size, identity=False):
+        super(SeqAttnMatch, self).__init__()
+        if not identity:
+            self.linear = nn.Linear(input_size, input_size)
+        else:
+            self.linear = None
+
+    def forward(self, x, y, y_mask):
+        """Input shapes:
+            x = batch * len1 * h
+            y = batch * len2 * h
+            y_mask = batch * len2
+        Output shapes:
+            matched_seq = batch * len1 * h
+        """
+        # Project vectors
+        if self.linear:
+            x_proj = self.linear(x.view(-1, x.size(2))).view(x.size())
+            x_proj = F.relu(x_proj)
+            y_proj = self.linear(y.view(-1, y.size(2))).view(y.size())
+            y_proj = F.relu(y_proj)
+        else:
+            x_proj = x
+            y_proj = y
+
+        # Compute scores
+        scores = x_proj.bmm(y_proj.transpose(2, 1))
+
+        # Mask padding
+        y_mask = y_mask.unsqueeze(1).expand(scores.size())
+        scores.data.masked_fill_(y_mask.data, -float('inf'))
+
+        # Normalize with softmax
+        alpha_flat = F.softmax(scores.view(-1, y.size(1)), dim=1)
+        alpha = alpha_flat.view(-1, x.size(1), y.size(1))
+
+        # Take weighted average
+        matched_seq = alpha.bmm(y)
+        return matched_seq
+
+
+class BilinearSeqAttn(nn.Module):
+    """A bilinear attention layer over a sequence X w.r.t y:
+    * o_i = softmax(x_i'Wy) for x_i in X.
+
+    Optionally don't normalize output weights.
+    """
+    def __init__(self, x_size, y_size, identity=False):
+        super(BilinearSeqAttn, self).__init__()
+        if not identity:
+            self.linear = nn.Linear(y_size, x_size)
+        else:
+            self.linear = None
+
+    def forward(self, x, y, x_mask):
+        """
+        x = batch * len * h1
+        y = batch * h2
+        x_mask = batch * len
+        """
+        Wy = self.linear(y) if self.linear is not None else y
+        xWy = x.bmm(Wy.unsqueeze(2)).squeeze(2)
+        # xWy.data.masked_fill_(x_mask.data, -float('inf'))
+        # if self.training:
+        #     # In training we output log-softmax for NLL
+        #     alpha = F.log_softmax(xWy, dim=1)
+        # else:
+        #     # ...Otherwise 0-1 probabilities
+        #     alpha = F.softmax(xWy, dim=1)
+        return xWy
+
+
+class LinearSeqAttn(nn.Module):
+    """Self attention over a sequence:
+    * o_i = softmax(Wx_i) for x_i in X.
+    """
+    def __init__(self, input_size):
+        super(LinearSeqAttn, self).__init__()
+        self.linear = nn.Linear(input_size, 1)
+
+    def forward(self, x, x_mask):
+        """
+        x = batch * len * hdim
+        x_mask = batch * len
+        """
+        x_flat = x.view(-1, x.size(-1))
+        scores = self.linear(x_flat).view(x.size(0), x.size(1))
+        # scores.data.masked_fill_(x_mask.data, -float('inf'))
+        alpha = F.softmax(scores, dim=1)
+        return alpha
+
+# ------------------------------------------------------------------------------
+# Functional
+# ------------------------------------------------------------------------------
+
+
+def uniform_weights(x, x_mask):
+    """Return uniform weights over non-masked input."""
+    alpha = Variable(torch.ones(x.size(0), x.size(1)))
+    if x.data.is_cuda:
+        alpha = alpha.cuda()
+    alpha = alpha * x_mask.eq(0).float()
+    alpha = alpha / alpha.sum(1).expand(alpha.size())
+    return alpha
+
+
+def weighted_avg(x, weights):
+    """x = batch * len * d
+    weights = batch * len
+    """
+    return weights.unsqueeze(1).bmm(x).squeeze(1)

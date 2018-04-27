@@ -4,6 +4,7 @@ Helper functions.
 
 import os
 import json
+import numpy as np
 import argparse
 
 ### IO
@@ -63,3 +64,6 @@ class FileLogger(object):
             print(message, file=out)
 
 
+def sample_batch(data_loader):
+    idx = np.random.randint(len(data_loader))
+    return data_loader[idx]
